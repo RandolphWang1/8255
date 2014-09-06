@@ -37,8 +37,6 @@ char* CHDRV_NAME = "c8255";
 //#define MODE1AIBO 0x90//A mode 0 input, C high input, B Mode 0 output, low C output
 
 
-#define PRINTER_OK 0
-#define PRINTER_BUSY 15
 
 void* io_base;
 
