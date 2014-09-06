@@ -1,0 +1,13 @@
+EINT6 <-> 并口8255 RESET
+
+EINT7 <-> MG323 Power On（TERM_ON)
+
+EINT8 <-> MG323 Reset
+
+EINT13 <->并口8255 ACK_PORT_A
+
+EINT14 <->并口8255 BUSY_PORT_B
+
+EINT15 <->并口8255 8255 PC0（并口传输中断）
+
+EINT17 <->并口8255 8255 PC3（并口传输中断）
