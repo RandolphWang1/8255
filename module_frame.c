@@ -6,10 +6,12 @@
 //#include <asm/segment.h>
 #include <linux/types.h>
 #include <linux/cdev.h>
+#include <linux/circ_buf.h>
 #include <asm/arch/regs-gpio.h>
 #include <asm/arch/regs-irq.h>
 #include <asm/io.h>
 #include <linux/ioport.h>
+#include <linux/poll.h>
 #include <asm/uaccess.h>        /* copy_to_user() */
 #include <linux/delay.h>    /* mdelay() */
 
@@ -36,7 +38,10 @@ char* CHDRV_NAME = "c8255";
 //#define MODE1AIBO 0xBC//A mode 1 input, C high input, B Mode 1 output, low C output
 //#define MODE1AIBO 0x90//A mode 0 input, C high input, B Mode 0 output, low C output
 
-
+#define circ_clear(circ) ((circ)->head = (circ)->tail = 0)
+#define circ_empty(circ) ((circ)->head == (circ)->tail)
+static DECLARE_WAIT_QUEUE_HEAD(c8255_waitq);
+struct circ_buf     xmit;
 
 void* io_base;
 
@@ -52,11 +57,11 @@ static inline int verify_area(int type, const void * addr, unsigned long size)
 int c8255_chdev_open( struct inode *inode, struct file *file )
 {
     unsigned int pinvalue = 0;
-    printk("c8255_open 1\n");
+   // printk("c8255_open 1\n");
     //io_base = ioremap_nocache(PORTA,LENGTH);
-    s3c2410_gpio_setpin(S3C2410_GPF6, 0);
-    pinvalue = s3c2410_gpio_getpin(S3C2410_GPF6);
-    printk("power TP1 mdelay:%d\n", pinvalue);
+    //s3c2410_gpio_setpin(S3C2410_GPF6, 0);
+    //pinvalue = s3c2410_gpio_getpin(S3C2410_GPF6);
+    //printk("power TP1 mdelay:%d\n", pinvalue);
     printk("c8255_open\n");
     return 0;
 }
@@ -70,19 +75,25 @@ int c8255_chdev_release( struct inode *inode, struct file *file )
 
 static ssize_t c8255_chdev_read(struct file *filp, char *buf, size_t count,loff_t *offset)
 {
-	unsigned int ix = 1;
+	unsigned int ix = 0;
     char buff;
-    char* buffer2 = kmalloc(1,GFP_KERNEL);
+    int flag = 0;
+    printk("rx:count:%d ",count);
+    //wait_event_interruptible(c8255_waitq, !circ_empty(&xmit));
+    
+    printk("rx:%d\n",CIRC_CNT(xmit.head,xmit.tail,PAGE_SIZE));
+    char* buffer2 = kmalloc(count,GFP_KERNEL);
+    char* pbuf = buffer2;
 	if(verify_area(VERIFY_WRITE,buf,count)==-EFAULT)
 		return -EFAULT;
-    //printk("adb ");
- //   iowrite8(0xb4,io_base + 3);
-    //printk("bdd ");
-	//buff = ioread8(io_base +2);
-  //  msleep(1);
-    //printk("cdd ");
-	//printk("c8255_read~~\n");
-	*(buffer2)=ioread8(io_base);
+    do {
+        *pbuf++ = xmit.buf[xmit.tail];
+        xmit.tail = (xmit.tail + 1) & (PAGE_SIZE -1);
+        if(circ_empty(&xmit))
+            break;
+    }while(ix++ < count);
+
+	//*(buffer2)=ioread8(io_base);
 	copy_to_user(buf,buffer2,ix);
 	kfree(buffer2);
 	return ix;
@@ -101,17 +112,16 @@ static ssize_t c8255_chdev_write(struct file *filp,const char *buf,size_t count,
     char* pbuf = buffer1;
 	//printk("c8255_write..\n");
 	copy_from_user(buffer1,buf,count);
+    printk("\ntx:count:%d",count);
     for(iy = 0 ;iy < count; iy++)
     {
         datax=*(pbuf++);
-    //iowrite8(0xb4,io_base + 3);
-    //printk("bdd ");
-	//buff = ioread8(io_base +2);
-    //msleep(1);
-        printk("c8255_write.datax:0x%x .%d\n",datax,iy);
+        printk("0x%x,",datax);
         iowrite8(datax, io_base+1);
-        udelay(100);
+        udelay(10);
+        
     }
+        printk("\n");
     kfree(buffer1);	
 #else
 	char* buffer1 = kmalloc(count,GFP_KERNEL);
@@ -370,16 +380,45 @@ static ssize_t c8255_chdev_ioctl(struct inode *inode, struct file *filp, unsigne
         case 21:
             free_irq(IRQ_EINT15, NULL);
             break;
+        case 22:
+            printk("circcnt:%d, %d, %d\n",CIRC_CNT(xmit.head,xmit.tail,PAGE_SIZE), xmit.head, xmit.tail);
+            break;
+        case 23:
+            
+        //8255 RESET pin
+        //s3c2410_gpio_cfgpin(S3C2410_GPF6, S3C2410_GPF6_OUTP);
+        s3c2410_gpio_setpin(S3C2410_GPF6, 0);
+        iowrite8(MODE1AIBO, io_base+3);
+        //INTA PC4, port A input INT enable 
+        iowrite8((u8)0x09,io_base+3);
+        //INTA PC2, port B output INT enable 
+        iowrite8((u8)0x05,io_base+3);
+            break;
         default:
             return -EINVAL;
     }
     return 0;
 
 }
+
+static unsigned int c8255_poll(struct file *filp, poll_table* wait)
+{
+    unsigned int mask = 0;
+    printk("c8255_poll enter");
+    poll_wait(filp, &c8255_waitq, wait);
+    printk("c8255_poll %d\n",CIRC_CNT(xmit.head,xmit.tail,PAGE_SIZE));
+    if(!circ_empty(&xmit)) {
+        mask |= POLLIN | POLLRDNORM;
+    }
+    return mask;
+    
+}
+
 static struct file_operations c8255_chdrv_fops = {
     .read = c8255_chdev_read, /* read */
     .write = c8255_chdev_write, /* write */
     .ioctl = c8255_chdev_ioctl, /* ioctl */
+    .poll = c8255_poll, /* poll */
     .open = c8255_chdev_open, /* open */
     .release = c8255_chdev_release, /* release */
 };
@@ -392,10 +431,13 @@ static irqreturn_t c8255_intsvc(int irq, void *dev_id, struct pt_regs *regs)
     spin_lock_irqsave(&local_lock,flags);
  //   disable_irq(IRQ_EINT17);
 	buf=ioread8(io_base);
-    //printk("A=0x%x,%c ", buf, buf);
-	iowrite8(buf, io_base+1);
+    printk("A=0x%x,%c ", buf, buf);
+    xmit.buf[xmit.head] = buf;
+    xmit.head = (xmit.head + 1) & (PAGE_SIZE-1);
+	//iowrite8(buf, io_base+1);
     //add_timer(&c8255_timer); // enable_irq(IRQ_EINT17);
     spin_unlock_irqrestore(&local_lock,flags);
+    wake_up_interruptible(&c8255_waitq);
     return IRQ_HANDLED;
 }
 
@@ -410,7 +452,6 @@ static irqreturn_t c8255_intsvc_tx(int irq, void *dev_id, struct pt_regs *regs)
     //spin_unlock_irqrestore(&local_lock,flags);
     return IRQ_HANDLED;
 }
-
 
 
 static void c8255_timer_cb()
@@ -429,6 +470,23 @@ static void c8255_timer_cb()
     enable_irq(IRQ_EINT17);
 #endif
 }
+
+static int circ_init(void)
+{
+    unsigned long page;
+    page = __get_free_page(GFP_KERNEL);
+    if(!page)
+        return -ENOMEM;
+    xmit.buf = (unsigned char*)page;
+    circ_clear(&xmit);
+    return 0;
+}
+
+static int circ_free(void)
+{
+    free_page((unsigned long)xmit.buf);
+}
+
 static int __init module_frame_init( void )
 {
     int ret;
@@ -446,6 +504,9 @@ static int __init module_frame_init( void )
     }
     #endif
     io_base = ioremap_nocache(PORTA,LENGTH);
+
+    circ_init();
+
     do {
         volatile void *bwscon;
         volatile void *bankcon1;
@@ -470,13 +531,16 @@ static int __init module_frame_init( void )
         reg_data |= (0x05<<4);
         printk(KERN_ALERT "reg_data bankcon1:%x\n", reg_data);
         writel(reg_data, bankcon1);
-
+        
+        //8255 RESET pin
         s3c2410_gpio_cfgpin(S3C2410_GPF6, S3C2410_GPF6_OUTP);
         s3c2410_gpio_setpin(S3C2410_GPF6, 0);
+#if 0
         pinvalue = s3c2410_gpio_getpin(S3C2410_GPF6);
         printk("power GPF6 mdelay:%d\n", pinvalue);
         pinstate = s3c2410_gpio_getcfg(S3C2410_GPF6);
         printk("pinstate GPG6 set:0x%x\n", pinstate);
+#endif
        // s3c2410_gpio_cfgpin(S3C2410_GPF6, S3C2410_GPF6_OUTP);
 
         s3c2410_gpio_cfgpin(S3C2410_GPA12, S3C2410_GPA12_nGCS1);

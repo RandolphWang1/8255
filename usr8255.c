@@ -107,6 +107,25 @@ int main(int argc, char** argv)
             write(fd1,escposstr1,strlen(escposstr1));
             write(fd1,escposstr,sizeof(escposstr));
             write(fd1,escposstr2,strlen(escposstr2));
+    } else if( cmd == 280) {
+            fd_set rfds;
+            while(1) {
+                int i = 0;
+                FD_ZERO(&rfds);
+                FD_SET(fd1, &rfds);
+                select(fd1 + 1, &rfds, NULL, NULL, NULL);
+                if(FD_ISSET(fd1, &rfds))
+                {
+                    char buft[4096];
+                    int num = read(fd1, buft, 4096);
+                    printf("\n!!!! num %d ", num);
+                    do{
+                        printf("%x ", buft[i++]);
+                    }while(i < num);
+                    printf("\n!!!!!!!!\n ", num);
+                    write(fd1,buft, num);
+                }
+            }
     } else {
         ret = ioctl(fd1, cmd, arg);
     }
